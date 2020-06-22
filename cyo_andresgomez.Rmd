@@ -1,0 +1,409 @@
+---
+title: "White Wines Quality"
+subtitle: "HarvardX: PH125.9x Capstone, CYO Project"
+author: "Andres Gomez"
+date: "June, 2020"
+output:
+  pdf_document: default
+  html_document:
+  df_print: paged
+  toc: yes
+---
+
+\newpage 
+\tableofcontents
+\newpage
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message=FALSE, error=TRUE, warning=FALSE)
+```
+## Introduction
+
+In this project, we are going to use the white wines data set (only the white one) which is part of the study done by [Cortez et al., 2009], and you can find at the UCI list of curated datasets.
+
+The dataset has the following *input* variables (based on physicochemical tests):
+
+1. fixed acidity
+2. volatile acidity
+3. citric acid
+4. residual sugar
+5. chlorides
+6. free sulfur dioxide
+7. total sulfur dioxide
+8. density
+9. pH
+10. sulphates
+11. alcohol
+
+And one *output* variable (based on sensory data):
+
+12. quality (score between 0 and 10)
+
+Our **goal** is to build some models that *predict the white wines quality and help deciding whether to "buy" or "avoid" a wine. We will reduce the quality of wines to these two categories.* We will explain how we define these categories in the Modeling approach section.
+
+First, in the **Method/Analysis** section we import the data and clean it, preparing it for analysis. We perform some exploratory data analysis, variables distributions, box-plots, correlation matrix, etc. Finally, we expose the *modeling approach* which will consist of two techniques: KNN and Random Forests, and the corresponding performance measures.
+
+Secondly, in the **Results** section, we share the results of the models, interpreting the results and evaluating the models.
+
+Third, in the **Conclusions** section, we summarize the work done, and share thoughts on possible improvements and next steps.
+
+## Method/Analysis
+
+In this section, we will do:
+
+1. Data import and cleaning.
+2. Exploratory data analysis.
+3. The *modeling approach*, using KNN and Random Forest. 
+
+### Data import and cleaning.
+
+We start by downloading the white wines data used by [Cortez et al., 2009], which you can find at the UCI list of curated datasets https://archive.ics.uci.edu/ml/datasets/Wine+Quality. Keep in mind that we are just using the white wines dataset, and not the red wines. We narrow our goal just for simplicity. 
+
+```{r getdata, message=FALSE, warning=FALSE}
+# Download data to be used and create a DF (actually a spec_tbl_df type of file)
+if(!require(readr)) install.packages("readr",  repos = "http://cran.us.r-project.org")
+
+
+if(!file.exists("winequality-white.csv")) 
+download.file("https://archive.ics.uci.edu/ml/machine-learning-databases/wine-quality/winequality-white.csv", "winequality-white.csv")
+
+wines <- read_delim("winequality-white.csv", 
+                    delim = ";", 
+                    locale = locale(decimal_mark = ".", 
+                                    grouping_mark = ","), 
+                    col_names = TRUE)
+
+# Set column names
+cnames <- c("fixed_acidity", "volatile_acidity", "citric_acid","residual_sugar", "chlorides",
+            "free_sulfur_dioxide","total_sulfur_dioxide", "density", "pH","sulphates",
+            "alcohol", "quality")
+# Rename columns to make it friendlier for R (at least for me)
+colnames(wines) <- cnames
+# Quality is numeric,
+# let's create a variable "rating" that will be quality as factor with convenient format
+if(!require(tidyverse)) install.packages("tidyverse", repos = "http://cran.us.r-project.org")
+if(!require(dplyr)) install.packages("dplyr", repos = "http://cran.us.r-project.org")
+
+wines <- mutate(wines, 
+               rating = as.factor(quality))
+levels(wines$rating) <- paste0("R_", levels(wines$rating))
+
+```
+
+### Exporatory data analysis
+
+First of all, let's get some high level stats, on the complete dataset, to understand how the looks like. I avoid doing the exploratory data analysis on partitioned datasets because we might lose some outliers, for example. 
+
+#### Summary Statistics
+
+```{r summary, message=FALSE, warning=FALSE}
+summary(wines)
+```
+
+
+#### Quality of wines distribution
+
+```{r dist, echo=FALSE,  message=FALSE, warning=FALSE}
+# Distribution of quality values
+ratings_prop <- wines %>% 
+  group_by(rating) %>% 
+  summarise(n = n()) %>% 
+  mutate(prop = n/sum(n))
+
+if(!require(ggplot2)) install.packages("ggplot2", repos = "http://cran.us.r-project.org")
+
+ggplot(ratings_prop) + geom_col(aes(rating, y = prop), fill="cornflowerblue") + 
+  geom_text(aes(x = rating,y = prop + 0.05, label = round(prop, 3)))+
+  labs(title = "Distribution of quality (rating) for white wines",
+       caption = "data: entire white whines dataset")
+```
+
+We see that most of wines have ratings between 5 and 7, being extreme ratings very rare.
+
+#### Box plots
+
+Let's get box plots (quantiles, min and max, etc) for all variables.
+
+```{r boxplots, message=FALSE, warning=FALSE, echo=FALSE }
+# Box plots
+if(!require(reshape2)) install.packages("reshape2", repos = "http://cran.us.r-project.org")
+df.m <- melt(wines[,-c(12)], id.var = "rating")
+p <- ggplot(data = df.m, aes(x=variable, y=value)) 
+p <- p + geom_boxplot()
+p <- p + facet_wrap( ~ variable, scales="free")
+p <- p + ggtitle("Box plots")
+p <- p + guides(fill=guide_legend(title="Legend_Title"))
+p 
+```
+
+And now let's replicate it by wine rating:
+
+```{r boxplotsvar , message=FALSE, warning=FALSE, echo=FALSE}
+p <- ggplot(data = df.m, aes(x=variable, y=value)) 
+p <- p + geom_boxplot(aes(fill = rating))
+p <- p + facet_wrap( ~ variable, scales="free")
+p <- p + ggtitle("Box plots")
+p <- p + guides(fill=guide_legend(title="Legend_Title"))
+p 
+
+```
+
+We can see that the higher the rating, higher alcohol. Also there is some similar pattern for pH.
+
+#### Correlation Matrix
+
+Other than density & residual sugar, and alcohol & dennsity, it seems that the variables are not correlated, as it is shown in the correlation matrix:
+
+```{r correlationmatrix, message=FALSE, warning=FALSE, echo=FALSE}
+if(!require(Hmisc)) install.packages("Hmisc", repos = "http://cran.us.r-project.org")
+if(!require(corrplot)) install.packages("corrplot", repos = "http://cran.us.r-project.org")
+res <- cor(as.matrix(wines[,1:12]))
+res <- round(res,2)
+corrplot(res, method = "shade", type = "lower", addCoef.col = "grey" )
+```
+
+### Modeling approach
+
+Let's start by preparing the data for modeling. First, we need to define what the category "buy/avoid" is. Using the descriptive statistics obtained earlier, we will define "avoid" as wines with ratings 3, 4 and 5, and "buy" was wines with ratings 6, 7, 8 and 9. "avoid" will represent 33.4% of the white wines sample, while "buy" 66.6%. Let's create this variable:
+
+```{r prepdatamodel, message=FALSE, warning=FALSE}
+wines_m <- wines %>% 
+  mutate(recom = factor(case_when(
+    rating %in% c("R_3", "R_4","R_5") ~ "avoid",
+    rating %in% c("R_6", "R_7","R_8","R_9") ~ "buy",
+    TRUE ~ "other"
+    )))
+
+```
+
+Now, let's create training and test sets to build our models. We will keep 10% of the sample as test, given that our inicial dataset consists of 4898 observations, this should be sufficient.
+
+```{r trainingtestsets, message=FALSE, warning=FALSE}
+if(!require(caret)) install.packages("caret", repos = "http://cran.us.r-project.org")
+# Test set will be 10% of the entire dataset
+set.seed(229, sample.kind = "Rounding")
+#set.seed(229) if you are using an R version earlier than 3.6
+indxTrain <- createDataPartition(y = wines_m$recom, 
+                                  times = 1, 
+                                  p = 0.9, 
+                                  list = FALSE)
+# Train and test sets for wine type
+training <- wines_m[indxTrain,]
+testing  <- wines_m[-indxTrain,]
+```
+
+Let's check the basic stats for both *train_set* and *test_test* to see if they are consistent with the entire dataset (which should be).
+
+```{r checkdatasetsstats, message=FALSE, warning=FALSE}
+summary(training)
+summary(testing)
+```
+
+Results are as expected (both datasets share the same estructure).
+
+Now we are ready to develop a model using the *training set* and evaluate it using the *testing set*. Please note that in the moment that the model requires tuning, we will further partition the *training set* so we keep the *testing set* "pure" and use it just for the final evaluation. 
+
+The models that we will try are the following:
+
+(@) KNN (k-nearest neighbors)
+
+The k-nearest neighbors algorithm estimates the conditional probability:
+$$p(x_1,..,x_p)=Pr(Y=k|X_1=x_1,..,X_p=x_p)$$
+The algorithm calculates the euclidean distance of all predictors, then for any point $(x_1,..,x_p)$ in the multidimensional space that we want to predict, the algorithm determines the distance to $k$ points. The $k$ nearest points is refereed as neighborhood. 
+
+For $k=1$ the algorithm finds the distance to a single neighbor. For $k$ equals to the number of samples, the algorithm uses all points. Hence, $k$ is a tuning parameter that can be calculated running the algorithm for several values of $k$ and picking the result with highest accuracy.
+
+(@) Random Forest
+
+Random forests improve prediction performance over classification trees by averaging multiple decision trees. The algorithm creates several random subsets of the original data, in this case the training set, and calculates the classification trees, then the final result is the average of all trees. A tree is basically a flow chart of *yes* or *no* questions.
+
+The name random forest derives from the random process of splitting the data and creating many trees, or a forest.
+
+(@) Performance Measures
+
+There are several measures to consider when evaluating the performance of a classification model as we have. 
+
+It's very important to define and understand what the *confusion matrix* is: a simple table with the cross tabulation of the predicted values with the actual observed values. 
+
+|                   | Actual Positive   |  Actual Negative  |
+|-------------------|:-----------------:|:-----------------:|
+|Predicted Positive |True Positive (TP) |False Positive (FP)|
+|Predicted Negative |False Negative (FN)|True Negative (TN) |
+
+All values are in absolute numbers of observations and predictions, so for example the *True Positive* is the number of predicted values that are exactly the same as the actual values.
+
+The meaning of the values in the table are:
+
+**True Positive (TP):** Predicted *positive* for an actual *positive* value.
+
+**True Negative (TN):** Predicted *negative* for an actual *negative* value.
+
+**False Positive (FP) or Type 1 Error:** Predicted *positive* for an actual *negative* value.
+
+**False Negative (FN) or Type 2 Error:** Predicted *negative* for an actual *positive* value.
+
+Some useful statistic metrics can be calculated from the confusion matrix.
+
+**Accuracy:** the proportion of correct predictions for both *positive* and *negative* outcomes, i.e. the ability to correctly predict a *positive* and *negative*. High accuracy with a large difference in the number of positives and negatives becomes less meaningful, since the algorithm loses the ability to predict the less common class. In this case, other metrics complements the analysis.
+
+$$Accuracy=\frac{TP + TN}{TP+FP+TN+FN}$$
+
+**Sensitivity:** the proportion of *positive* values when they are actually *positive*, i.e. the ability to predict *positive* values.  
+
+$$Sensitivity = \frac{TP}{TP + FN}$$
+
+**Specificity:** is the probability of a predicted *negative* value conditioned to a *negative* outcome.
+
+$$Specificity=Pr(\hat Y=Negative|Y=Negative)$$
+
+In other words, specificity is the proportion of *negative* values when they are actually *negative*, i.e. the ability to predict *negative* values. 
+
+$$Specificity = \frac{TN}{TN+FP}$$
+
+**Prevalence:** how often the *positive* value appears in the sample. Low prevalence may lead to statistically incorrect conclusions.
+
+$$Prevalence=\frac{TP+FN}{TP+FP+TN+FN}$$
+
+**Precision:** is the probability of an actual *positive* occurs conditioned to a predicted *positive* result. 
+
+$$Precision = Pr(Y=Positive|\hat Y=Positive)$$
+
+Precision can be written as the proportion of *positive* values that are actually *positive*.
+
+$$Precision=\frac{TP}{TP+FP}$$
+
+**Recall:** is the same as sensitivity and is the probability of a predicted *positive* value conditioned to an actual *positive* value.
+
+$$Recall = Sensitivity = Pr(\hat Y = Positive|Y=Positive)$$
+
+$$Recall=\frac{TP}{TP+FN}$$
+
+## Results
+
+Let's start by:
+
+###KNN
+
+We'll use all features to predict the variable "recom" (our "recommendation" or "buy/avoid")
+
+We also *center* and *scale* the variables since is a requirement for the technique:
+
+```{r preknn}
+trainX <- training[,names(training) != "recom"]
+preProcValues <- preProcess(x = trainX,method = c("center", "scale"))
+preProcValues
+
+```
+
+We will use the caret package to run KNN
+
+```{r knn, message=FALSE, warning=FALSE}
+if(!require(caret)) install.packages("caret", repos = "http://cran.us.r-project.org")
+if(!require(ISLR)) install.packages("ISLR", repos = "http://cran.us.r-project.org")
+trainX <- training[,names(training) != "recom"]
+trainX_Rel <-trainX[,-c(12,13)]
+preProcValues <- preProcess(x = trainX_Rel,method = c("center", "scale"))
+preProcValues
+
+#training and training control 
+set.seed(229, sample.kind = "Rounding")
+ctrl <- trainControl(method="repeatedcv",repeats = 3) 
+knnFit <- train(recom ~ ., data = training[,-c(12,13)], method = "knn", trControl = ctrl, preProcess = c("center","scale"), tuneLength = 20)
+```
+We can check the output of our model:
+
+```{r knnout, message=FALSE, warning=FALSE}
+#Output of kNN fit
+knnFit
+
+#Plotting yields Number of Neighbours Vs accuracy (based on repeated cross validation)
+plot(knnFit)
+```
+
+We can see that the final k value used for our model was k=37.
+
+Confusion matrix is as follows:
+
+```{r confmatrknn, message=FALSE, warning=FALSE}
+knnPredict <- predict(knnFit,newdata = testing[,-c(12,13)] )
+#Get the confusion matrix to see accuracy value and other parameter values
+confusionMatrix(knnPredict, testing$recom )
+```
+
+We see our accuracy is about 78%, but our prevalence is about 33%. Ideally we would like a greater prevalence. Also notice that in 73 cases we are telling "buy" while actually we should have suggested to "avoid", which is still high. We consider this like the worst error, since it's not that bad when you suggest to "avoid" and actually should be a "buy" (you would not have a bad experience).
+
+And the ROC with respective AUC is:
+
+
+```{r knnroc, message=FALSE, warning=FALSE}
+if(!require(pROC)) install.packages("pROC", repos = "http://cran.us.r-project.org")
+
+knnPredict <- predict(knnFit,newdata = testing , type="prob")
+knnROC <- roc(testing$recom,knnPredict[,"avoid"])
+knnROC
+
+plot(knnROC, type="S", print.thres= 0.5)
+```
+
+So AUC is 0.8454... not terrible but could be improved, which we will try to do using Random Forest.
+
+###Random Forest
+
+We have already installed the packages to use (caret and pROC)... let's start by training:
+
+```{r trainRF,message=FALSE, warning=FALSE }
+set.seed(229, sample.kind = "Rounding")
+ctrl <- trainControl(method="repeatedcv",repeats = 3) 
+# Random forrest
+rfFit <- train(recom~., data=training[,-c(12,13)],method="rf",trControl= ctrl,preProcess=c("center","scale"),tuneLength = 20)
+```
+
+The trained model looks like:
+
+```{r RFfit, message=FALSE, warning=FALSE}
+rfFit
+```
+
+Confusion matrix:
+
+```{r RFCM, message=FALSE, warning=FALSE}
+rfPredict <- predict(rfFit,newdata = testing[,-c(12,13)] )
+confusionMatrix(rfPredict, testing$recom )
+```
+
+We improved accuracy, sensitivity and specificity... we have less number of false positives. Let's see how ROC and AUC look like:
+
+```{r RFROC, message=FALSE, warning=FALSE}
+rfPredict <- predict(rfFit,newdata = testing[,-c(12,13)] , type="prob")
+rfROC <- roc(testing$recom,rfPredict[,"avoid"])
+rfROC
+
+plot(rfROC, type="S", print.thres= 0.5)
+```
+
+Now the AUC is 0.9156, which is much better. 
+
+## Conclusions
+
+In this report we have shown how to use the caret package to perform classification techniques in R, more especifically KNN and Random Forest, in order to predict white wines quality.
+
+First we have explored the data, providing statistic summaries like quantiles, distributions, correlation, etc. Then we have shown how to perform KNN and Random Forest using the caret package.
+
+We showed that we improve the KNN results by running Random Forest and obtaining an AUC = 0.9156. So we could say we have a model to "recommend" whether to "buy" or "avoid" a white wine based on variables generated by physicochemical tests. 
+
+As limitations we could highlight:
+
+1. Personally I run into hardward limitations when running Random Forest, which limited my capacity to run several iterations with different parameters for example.
+
+2. This model only uses features created by physicochemical tests, so we don't count with other information that could be valuable like market price, or customer experience.
+
+Some next steps would be:
+
+1. Enhance the models running different iterations with different parameters.
+
+2. Use other models like LDA, QDA, Logistic Regression, etc... and even some clustering techniques (maybe with a modified goal, but still classifying).
+
+## References {-}
+
+* P. Cortez, A. Cerdeira, F. Almeida, T. Matos and J. Reis.
+Modeling wine preferences by data mining from physicochemical properties. In Decision Support Systems, Elsevier, 47(4):547-553, 2009.
